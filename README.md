@@ -1,6 +1,5 @@
 # ROAR_Competition
 
-The first place submission by the BHS Racing team for the Summer 2024 ROAR Competition on the Monza map.
 
 ## Requirements
 
