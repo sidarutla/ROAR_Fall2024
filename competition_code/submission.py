@@ -7,6 +7,8 @@ Please do not change anything else but fill out the to-do sections.
 
 import numpy as np
 from math import atan2, hypot, sin, cos, pi, exp
+from scipy.interpolate import splprep, splev
+from scipy.spatial.distance import cdist
 
 class RegulatedPurePursuitController:
     def __init__(self):
@@ -37,49 +39,222 @@ class RegulatedPurePursuitController:
         self.previous_linear_velocity = 0.0
         self.previous_angular_velocity = 0.0
         self.last_time = None
+        
+        # Path preprocessing parameters
+        self.path_resolution = 0.1  # meters between points
+        self.smoothing_factor = 0.1  # B-spline smoothing
+        self.max_path_points = 1000
+        self.min_path_points = 10
+        self.pruning_distance = 0.5  # meters
+        self.look_ahead_points = 5
+        
+        # Path memory
+        self.processed_path = None
+        self.path_curvatures = None
+        self.current_path_index = 0
+
+    def set_path(self, path):
+        """
+        Preprocess and store a new path
+        
+        Args:
+            path: [[x1,y1], [x2,y2], ...] - List of waypoints
+        """
+        if len(path) < 2:
+            return False
+            
+        # Preprocess the path
+        self.processed_path = self._preprocess_path(path)
+        
+        # Calculate path properties
+        self.path_curvatures = self._calculate_path_curvatures(self.processed_path)
+        self.current_path_index = 0
+        
+        return True
+
+    def _preprocess_path(self, path):
+        """
+        Comprehensive path preprocessing pipeline
+        """
+        # 1. Remove redundant points
+        path = self._remove_redundant_points(path)
+        
+        # 2. Smooth the path using B-splines
+        path = self._smooth_path(path)
+        
+        # 3. Resample path at desired resolution
+        path = self._resample_path(path)
+        
+        # 4. Ensure path doesn't exceed maximum points
+        if len(path) > self.max_path_points:
+            path = self._downsample_path(path)
+            
+        return path
+
+    def _remove_redundant_points(self, path):
+        """Remove points that are too close together"""
+        if len(path) < 2:
+            return path
+            
+        filtered_path = [path[0]]
+        for point in path[1:]:
+            if hypot(point[0] - filtered_path[-1][0],
+                    point[1] - filtered_path[-1][1]) > self.pruning_distance:
+                filtered_path.append(point)
+                
+        return np.array(filtered_path)
+
+    def _smooth_path(self, path):
+        """Smooth path using B-splines"""
+        if len(path) < 3:
+            return path
+            
+        try:
+            # Fit B-spline to path
+            tck, u = splprep([path[:, 0], path[:, 1]], s=self.smoothing_factor, k=3)
+            
+            # Generate new points along spline
+            u_new = np.linspace(0, 1, len(path) * 2)
+            smoothed_path = np.column_stack(splev(u_new, tck))
+            
+            return smoothed_path
+        except Exception:
+            # Fallback if spline fitting fails
+            return path
+
+    def _resample_path(self, path):
+        """Resample path at regular intervals"""
+        resampled_path = []
+        cumulative_distance = 0.0
+        current_point = path[0]
+        resampled_path.append(current_point)
+        
+        for point in path[1:]:
+            distance = hypot(point[0] - current_point[0],
+                           point[1] - current_point[1])
+            
+            while cumulative_distance + distance > self.path_resolution:
+                # Interpolate new point
+                ratio = (self.path_resolution - cumulative_distance) / distance
+                new_point = [
+                    current_point[0] + ratio * (point[0] - current_point[0]),
+                    current_point[1] + ratio * (point[1] - current_point[1])
+                ]
+                resampled_path.append(new_point)
+                
+                # Update for next iteration
+                current_point = new_point
+                distance = hypot(point[0] - current_point[0],
+                               point[1] - current_point[1])
+                cumulative_distance = 0.0
+                
+            cumulative_distance += distance
+            current_point = point
+            
+        # Add final point
+        resampled_path.append(path[-1])
+        return np.array(resampled_path)
+
+    def _downsample_path(self, path):
+        """Downsample path to maximum allowed points"""
+        if len(path) <= self.max_path_points:
+            return path
+            
+        indices = np.linspace(0, len(path)-1, self.max_path_points, dtype=int)
+        return path[indices]
+
+    def _calculate_path_curvatures(self, path):
+        """Calculate curvature at each path point"""
+        if len(path) < 3:
+            return np.zeros(len(path))
+            
+        curvatures = np.zeros(len(path))
+        
+        for i in range(1, len(path)-1):
+            curvatures[i] = self._estimate_curvature(
+                path[i-1],
+                path[i],
+                path[i+1]
+            )
+            
+        # Set end points curvature same as neighbors
+        curvatures[0] = curvatures[1]
+        curvatures[-1] = curvatures[-2]
+        
+        return curvatures
+
+    def _estimate_curvature(self, p1, p2, p3):
+        """Estimate curvature using three points"""
+        # Use Menger curvature formula
+        area = 0.5 * abs(
+            (p2[0] - p1[0]) * (p3[1] - p1[1]) -
+            (p3[0] - p1[0]) * (p2[1] - p1[1])
+        )
+        
+        d1 = hypot(p2[0] - p1[0], p2[1] - p1[1])
+        d2 = hypot(p3[0] - p2[0], p3[1] - p2[1])
+        d3 = hypot(p1[0] - p3[0], p1[1] - p3[1])
+        
+        try:
+            return 4 * area / (d1 * d2 * d3)
+        except ZeroDivisionError:
+            return 0.0
+
+    def _update_current_path_index(self, robot_pose):
+        """Update the current position along the path"""
+        if self.processed_path is None:
+            return
+            
+        # Find closest point on path
+        distances = cdist(
+            self.processed_path,
+            [[robot_pose[0], robot_pose[1]]]
+        ).flatten()
+        
+        closest_idx = np.argmin(distances)
+        
+        # Look ahead a few points to avoid backtracking
+        self.current_path_index = min(
+            closest_idx + self.look_ahead_points,
+            len(self.processed_path) - 1
+        )
 
     def compute_velocity(self, robot_pose, path, obstacles=None, current_velocity=None, dt=0.1):
         """
-        Compute regulated velocity commands with obstacle avoidance.
-        
-        Args:
-            robot_pose: [x, y, theta] - Robot's current pose
-            path: [[x1,y1], [x2,y2], ...] - List of waypoints
-            obstacles: [[x1,y1], [x2,y2], ...] - List of obstacle positions
-            current_velocity: [v, w] - Current linear and angular velocity
-            dt: Time step since last update
+        Enhanced compute_velocity with path preprocessing
         """
-        if len(path) < 2:
-            return 0.0, 0.0
-
-        path = np.array(path)
-        if obstacles is not None:
-            obstacles = np.array(obstacles)
+        # Update or initialize processed path
+        if self.processed_path is None:
+            if not self.set_path(path):
+                return 0.0, 0.0
+                
+        # Update current position along path
+        self._update_current_path_index(robot_pose)
         
-        # Find lookahead point with adaptive distance
-        lookahead_point = self._find_lookahead_point(robot_pose, path)
-        if lookahead_point is None:
-            return 0.0, 0.0
-
-        # Compute base velocities
-        curvature = self._compute_curvature(robot_pose, lookahead_point)
-        base_linear_vel, base_angular_vel = self._compute_velocity_commands(curvature)
-
-        # Apply velocity regulation with obstacle avoidance
-        linear_vel, angular_vel = self._regulate_velocity(
-            base_linear_vel,
-            base_angular_vel,
+        # Get relevant path segment
+        active_path = self.processed_path[self.current_path_index:]
+        
+        # Use existing velocity computation with processed path
+        return super().compute_velocity(
             robot_pose,
-            path,
+            active_path,
             obstacles,
+            current_velocity,
             dt
         )
 
-        # Update controller state
-        self.previous_linear_velocity = linear_vel
-        self.previous_angular_velocity = angular_vel
-
-        return linear_vel, angular_vel
+    def _apply_path_scaling(self, linear_vel, robot_pose, path):
+        """Enhanced path scaling using preprocessed curvature"""
+        if self.path_curvatures is None:
+            return super()._apply_path_scaling(linear_vel, robot_pose, path)
+            
+        # Use pre-calculated curvatures
+        local_curvature = self.path_curvatures[self.current_path_index]
+        
+        # Scale velocity based on curvature
+        curvature_scaling = 1.0 / (1.0 + self.curvature_scaling_factor * abs(local_curvature))
+        
+        return linear_vel * curvature_scaling
 
     def _regulate_velocity(self, linear_vel, angular_vel, robot_pose, path, obstacles, dt):
         """
@@ -218,16 +393,6 @@ class RegulatedPurePursuitController:
         else:
             return max(target_vel, current_vel - max_dec)
 
-    def _apply_path_scaling(self, linear_vel, robot_pose, path):
-        """Scale velocity based on path characteristics"""
-        # Calculate local path curvature
-        local_curvature = self._estimate_path_curvature(path)
-        
-        # Scale velocity based on curvature
-        curvature_scaling = 1.0 / (1.0 + self.curvature_scaling_factor * abs(local_curvature))
-        
-        return linear_vel * curvature_scaling
-
     def _apply_goal_approach_scaling(self, linear_vel, robot_pose, path):
         """Scale velocity when approaching the goal"""
         if len(path) < 2:
@@ -248,41 +413,6 @@ class RegulatedPurePursuitController:
             return linear_vel * scaling
 
         return linear_vel
-
-    def _estimate_path_curvature(self, path, window_size=3):
-        """Estimate local path curvature using a sliding window"""
-        if len(path) < window_size:
-            return 0.0
-
-        # Use Menger curvature for estimation
-        curvatures = []
-        for i in range(len(path) - window_size + 1):
-            points = path[i:i + window_size]
-            curvature = self._menger_curvature(points)
-            curvatures.append(abs(curvature))
-
-        return np.mean(curvatures)
-
-    @staticmethod
-    def _menger_curvature(points):
-        """Calculate Menger curvature for three points"""
-        if len(points) != 3:
-            return 0.0
-
-        p1, p2, p3 = points
-        area = 0.5 * abs(
-            (p2[0] - p1[0]) * (p3[1] - p1[1]) -
-            (p3[0] - p1[0]) * (p2[1] - p1[1])
-        )
-        
-        d1 = hypot(p2[0] - p1[0], p2[1] - p1[1])
-        d2 = hypot(p3[0] - p2[0], p3[1] - p2[1])
-        d3 = hypot(p1[0] - p3[0], p1[1] - p3[1])
-        
-        try:
-            return 4 * area / (d1 * d2 * d3)
-        except ZeroDivisionError:
-            return 0.0
 
     def _find_lookahead_point(self, robot_pose, path):
         """Find the lookahead point on the path"""
