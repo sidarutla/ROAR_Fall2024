@@ -6,7 +6,7 @@ Please do not change anything else but fill out the to-do sections.
 #!/usr/bin/env python3
 
 import numpy as np
-from math import atan2, hypot, sin, cos, pi
+from math import atan2, hypot, sin, cos, pi, exp
 
 class RegulatedPurePursuitController:
     def __init__(self):
@@ -20,24 +20,32 @@ class RegulatedPurePursuitController:
         
         # Velocity regulation parameters
         self.curvature_scaling_factor = 2.0
-        self.acceleration_limit = 0.5  # m/s^2
-        self.deceleration_limit = 0.8  # m/s^2
-        self.angular_acceleration_limit = 1.5  # rad/s^2
+        self.acceleration_limit = 0.5
+        self.deceleration_limit = 0.8
+        self.angular_acceleration_limit = 1.5
         self.approach_velocity_scaling_dist = 1.0
         self.approach_velocity_scaling_factor = 0.5
+        
+        # Obstacle avoidance parameters
+        self.obstacle_influence_radius = 0.5
+        self.safety_radius = 0.3
+        self.obstacle_weight = 1.0
+        self.repulsive_field_strength = 0.5
+        self.max_obstacle_influence = 0.8
         
         # Controller state
         self.previous_linear_velocity = 0.0
         self.previous_angular_velocity = 0.0
         self.last_time = None
 
-    def compute_velocity(self, robot_pose, path, current_velocity=None, dt=0.1):
+    def compute_velocity(self, robot_pose, path, obstacles=None, current_velocity=None, dt=0.1):
         """
-        Compute regulated velocity commands to follow the path.
+        Compute regulated velocity commands with obstacle avoidance.
         
         Args:
             robot_pose: [x, y, theta] - Robot's current pose
             path: [[x1,y1], [x2,y2], ...] - List of waypoints
+            obstacles: [[x1,y1], [x2,y2], ...] - List of obstacle positions
             current_velocity: [v, w] - Current linear and angular velocity
             dt: Time step since last update
         """
@@ -45,6 +53,8 @@ class RegulatedPurePursuitController:
             return 0.0, 0.0
 
         path = np.array(path)
+        if obstacles is not None:
+            obstacles = np.array(obstacles)
         
         # Find lookahead point with adaptive distance
         lookahead_point = self._find_lookahead_point(robot_pose, path)
@@ -55,12 +65,13 @@ class RegulatedPurePursuitController:
         curvature = self._compute_curvature(robot_pose, lookahead_point)
         base_linear_vel, base_angular_vel = self._compute_velocity_commands(curvature)
 
-        # Apply sophisticated velocity regulation
+        # Apply velocity regulation with obstacle avoidance
         linear_vel, angular_vel = self._regulate_velocity(
             base_linear_vel,
             base_angular_vel,
             robot_pose,
             path,
+            obstacles,
             dt
         )
 
@@ -70,9 +81,9 @@ class RegulatedPurePursuitController:
 
         return linear_vel, angular_vel
 
-    def _regulate_velocity(self, linear_vel, angular_vel, robot_pose, path, dt):
+    def _regulate_velocity(self, linear_vel, angular_vel, robot_pose, path, obstacles, dt):
         """
-        Advanced velocity regulation considering multiple factors
+        Advanced velocity regulation with obstacle avoidance
         """
         # 1. Apply acceleration limits
         linear_vel = self._apply_acceleration_limits(
@@ -94,14 +105,23 @@ class RegulatedPurePursuitController:
             path
         )
 
-        # 3. Scale velocity when approaching goal
+        # 3. Apply obstacle avoidance
+        if obstacles is not None:
+            linear_vel, angular_vel = self._apply_obstacle_avoidance(
+                linear_vel,
+                angular_vel,
+                robot_pose,
+                obstacles
+            )
+
+        # 4. Scale velocity when approaching goal
         linear_vel = self._apply_goal_approach_scaling(
             linear_vel,
             robot_pose,
             path
         )
 
-        # 4. Ensure minimum velocity constraints
+        # 5. Ensure minimum velocity constraints
         linear_vel = max(linear_vel, self.min_linear_velocity)
         angular_vel = np.clip(
             angular_vel,
@@ -110,6 +130,80 @@ class RegulatedPurePursuitController:
         )
 
         return linear_vel, angular_vel
+
+    def _apply_obstacle_avoidance(self, linear_vel, angular_vel, robot_pose, obstacles):
+        """Apply obstacle avoidance behavior"""
+        if len(obstacles) == 0:
+            return linear_vel, angular_vel
+
+        # Calculate repulsive forces from obstacles
+        total_force_x = 0
+        total_force_y = 0
+        robot_x, robot_y, robot_theta = robot_pose
+
+        for obstacle in obstacles:
+            # Calculate distance to obstacle
+            dx = obstacle[0] - robot_x
+            dy = obstacle[1] - robot_y
+            distance = hypot(dx, dy)
+
+            if distance < self.obstacle_influence_radius:
+                # Calculate repulsive force
+                force_magnitude = self._calculate_repulsive_force(distance)
+                
+                # Calculate force components
+                force_x = -force_magnitude * dx / distance
+                force_y = -force_magnitude * dy / distance
+                
+                total_force_x += force_x
+                total_force_y += force_y
+
+        # Convert forces to velocity adjustments
+        if abs(total_force_x) > 0 or abs(total_force_y) > 0:
+            # Calculate desired heading change
+            desired_heading = atan2(total_force_y, total_force_x)
+            heading_error = self._normalize_angle(desired_heading - robot_theta)
+            
+            # Adjust angular velocity based on heading error
+            angular_vel += self.obstacle_weight * heading_error
+            
+            # Scale linear velocity based on obstacle proximity
+            force_magnitude = hypot(total_force_x, total_force_y)
+            velocity_scaling = 1.0 - min(force_magnitude, self.max_obstacle_influence)
+            linear_vel *= velocity_scaling
+
+        return linear_vel, angular_vel
+
+    def _calculate_repulsive_force(self, distance):
+        """Calculate repulsive force based on distance to obstacle"""
+        if distance < self.safety_radius:
+            return self.repulsive_field_strength
+        elif distance < self.obstacle_influence_radius:
+            # Exponential decay of force
+            d_scaled = (distance - self.safety_radius) / (self.obstacle_influence_radius - self.safety_radius)
+            return self.repulsive_field_strength * exp(-5 * d_scaled)
+        return 0.0
+
+    def _detect_collision_risk(self, robot_pose, obstacles):
+        """Detect if there's a risk of collision"""
+        if obstacles is None:
+            return False
+
+        robot_x, robot_y, _ = robot_pose
+        for obstacle in obstacles:
+            distance = hypot(obstacle[0] - robot_x, obstacle[1] - robot_y)
+            if distance < self.safety_radius:
+                return True
+        return False
+
+    @staticmethod
+    def _normalize_angle(angle):
+        """Normalize angle to [-pi, pi]"""
+        while angle > pi:
+            angle -= 2 * pi
+        while angle < -pi:
+            angle += 2 * pi
+        return angle
 
     def _apply_acceleration_limits(self, target_vel, current_vel, dt, is_angular=False):
         """Apply acceleration limits to velocity changes"""
