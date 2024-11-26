@@ -2,6 +2,9 @@
 
 import math
 import numpy as np
+import rclpy
+from nav2_core.controller import Controller
+from nav2_core.exceptions import ControllerException
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
@@ -12,6 +15,8 @@ from nav2_core.controller import Controller
 
 class RegulatedPurePursuitController(Controller):
     def __init__(self):
+        self.name = 'RegulatedPurePursuitController'
+        super().__init__()
         self.params = {
             'desired_linear_vel': 0.5,
             'lookahead_dist': 0.6,
@@ -25,49 +30,57 @@ class RegulatedPurePursuitController(Controller):
         }
         
     def configure(self, node, name, tf, costmap):
-        """Configure controller with ROS parameters"""
+        """Configure the controller with ROS parameters"""
         self.node = node
-        self.name = name
         self.tf = tf
         self.costmap = costmap
-        self.global_path = None
-        
-        # Load parameters
-        self.load_params()
-        
-    def load_params(self):
-        """Load parameters from ROS parameter server"""
-        # Add parameter loading logic here
-        pass
-        
+        self.name = name
+
+        # Get parameters from ROS param server
+        self.get_parameters()
+        return True
+
+    def get_parameters(self):
+        """Get parameters from ROS parameter server"""
+        self.lookahead_distance = self.node.get_parameter('lookahead_dist').value
+        self.max_linear_velocity = self.node.get_parameter('max_linear_vel').value
+        self.min_linear_velocity = self.node.get_parameter('min_linear_vel').value
+        self.max_angular_velocity = self.node.get_parameter('max_angular_vel').value
+        # ... (add other parameters)
+
     def setPath(self, path):
-        """Set the global path"""
-        self.global_path = path
-        
+        """ROS2 interface for setting the path"""
+        return self.set_path(path.poses)
+
     def computeVelocityCommands(self, pose, velocity):
-        """Compute velocity commands to follow path"""
-        if not self.global_path:
-            return None
+        """ROS2 interface for computing velocity commands"""
+        try:
+            if self.processed_path is None:
+                raise ControllerException('Path not set!')
+
+            cmd_vel = self.compute_velocity(
+                self._pose_to_array(pose),
+                self.processed_path,
+                None,  # obstacles
+                self._twist_to_array(velocity)
+            )
             
-        # Find lookahead point
-        lookahead_point = self.findLookaheadPoint(pose)
-        if not lookahead_point:
-            return None
-            
-        # Calculate velocity commands
-        cmd_vel = self.calculateVelocityCommands(pose, lookahead_point)
-        
-        # Apply velocity scaling
-        if self.params['use_velocity_scaled_lookahead_dist']:
-            cmd_vel = self.applyVelocityScaling(cmd_vel, pose, lookahead_point)
-            
-        # Check for collisions
-        if self.params['use_collision_detection']:
-            if self.checkCollision(pose, cmd_vel):
-                cmd_vel.linear.x = 0.0
-                cmd_vel.angular.z = 0.0
-                
-        return cmd_vel
+            return self._create_twist_message(cmd_vel)
+        except Exception as e:
+            raise ControllerException(str(e))
+
+    # Helper methods for ROS message conversion
+    def _pose_to_array(self, pose):
+        """Convert ROS pose to [x, y, theta]"""
+        # Implementation here
+
+    def _twist_to_array(self, twist):
+        """Convert ROS twist to [v, w]"""
+        # Implementation here
+
+    def _create_twist_message(self, velocities):
+        """Convert [v, w] to ROS twist message"""
+        # Implementation here
         
     def findLookaheadPoint(self, pose):
         """Find lookahead point on path"""
