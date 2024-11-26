@@ -164,9 +164,12 @@ class RoarCompetitionSolution:
         nextWaypointIndex = self.get_lookahead_index(current_speed_kmh)
         waypoint_to_follow = self.next_waypoint_smooth(current_speed_kmh)
 
-        # Pure pursuit controller to steer the vehicle
-        steer_control = self.lat_controller.run(
-            vehicle_location, vehicle_rotation, waypoint_to_follow
+        # Pure pursuit controller to steer the vehicle with regulated features
+        steer_control, path_curvature = self.lat_controller.run(
+            vehicle_location, 
+            vehicle_rotation, 
+            waypoint_to_follow,
+            current_speed_kmh
         )
 
         # Custom controller to control the vehicle's speed
@@ -178,6 +181,7 @@ class RoarCompetitionSolution:
             vehicle_location,
             current_speed_kmh,
             self.current_section,
+            path_curvature
         )
 
         steerMultiplier = round((current_speed_kmh + 0.001) / 120, 3)

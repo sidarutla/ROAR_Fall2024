@@ -31,15 +31,39 @@ class ThrottleController:
         self.brake_test_counter = 0
         self.brake_test_in_progress = False
 
+        # Regulated Pure Pursuit velocity parameters
+        self.use_regulated_linear_velocity_scaling = True
+        self.regulated_linear_scaling_min_speed = 0.5   # Minimum speed in m/s
+        self.regulated_linear_scaling_max_speed = 200.0 # Maximum speed in km/h
+        self.desired_linear_vel = 200.0                 # Target maximum velocity in km/h
+        self.min_radius_velocity_scaling = 0.4          # How much to reduce speed in turns (0-1)
+        
     def __del__(self):
         print("done")
 
     def run(
-        self, waypoints, current_location, current_speed, current_section
-    ) -> (float, float, int):
+        self,
+        waypoints,
+        current_location,
+        current_speed,
+        current_section,
+        path_curvature=0.0
+    ):
+        """
+        Args:
+            waypoints: List of upcoming waypoints
+            current_location: Current vehicle location
+            current_speed: Current speed in km/h
+            current_section: Current track section
+            path_curvature: Current path curvature from lateral controller
+        """
         self.tick_counter += 1
         throttle, brake = self.get_throttle_and_brake(
-            current_location, current_speed, current_section, waypoints
+            current_location,
+            current_speed,
+            current_section,
+            waypoints,
+            path_curvature
         )
         # gear = max(1, (int)(math.log(current_speed + 0.00001, 5)))
         gear = max(1, int(current_speed / 60))
@@ -59,7 +83,12 @@ class ThrottleController:
         return throttle, brake, gear
 
     def get_throttle_and_brake(
-        self, current_location, current_speed, current_section, waypoints
+        self,
+        current_location,
+        current_speed,
+        current_section,
+        waypoints,
+        path_curvature=0.0
     ):
         """
         Returns throttle and brake values based off the car's current location and the radius of the approaching turn
@@ -70,6 +99,9 @@ class ThrottleController:
         r2 = self.get_radius(nextWaypoint[self.mid_index : self.mid_index + 3])
         r3 = self.get_radius(nextWaypoint[self.far_index : self.far_index + 3])
 
+        # Get regulated velocity based on path curvature
+        regulated_speed = self.get_regulated_velocity(1.0/r1, current_speed)
+        
         target_speed1 = self.get_target_speed(r1, current_section)
         target_speed2 = self.get_target_speed(r2, current_section)
         target_speed3 = self.get_target_speed(r3, current_section)
@@ -467,3 +499,27 @@ class ThrottleController:
         if self.display_debug:
             print(text)
             self.debug_strings.append(text)
+
+    def get_regulated_velocity(self, curvature, current_speed):
+        """Calculate velocity based on path curvature (from regulated pure pursuit)"""
+        if not self.use_regulated_linear_velocity_scaling:
+            return current_speed
+            
+        # Convert desired speed to m/s
+        desired_speed_ms = self.desired_linear_vel / 3.6
+        
+        # Calculate radius from curvature
+        radius = 1.0 / max(abs(curvature), 1e-6)
+        
+        # Scale velocity based on curvature radius
+        curvature_velocity = desired_speed_ms * self.min_radius_velocity_scaling * math.sqrt(radius)
+        
+        # Ensure velocity stays within bounds
+        regulated_velocity = np.clip(
+            curvature_velocity,
+            self.regulated_linear_scaling_min_speed,
+            desired_speed_ms
+        )
+        
+        # Convert back to km/h
+        return regulated_velocity * 3.6
