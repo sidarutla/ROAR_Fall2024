@@ -1,0 +1,13 @@
+controller_server:
+  ros__parameters:
+    regulated_pure_pursuit:
+      lookahead_dist: 0.5
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      max_linear_vel: 0.5
+      min_linear_vel: 0.1
+      max_angular_vel: 1.0
+      curvature_scaling_factor: 2.0
+      smoothing_factor: 0.1
+      path_resolution: 0.1
+      # ... (other parameters) 
