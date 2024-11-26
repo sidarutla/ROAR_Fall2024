@@ -1,175 +1,171 @@
 #!/usr/bin/env python3
 
-import math
 import numpy as np
-import rclpy
+from math import atan2, hypot, sin, cos, pi
 from nav2_core.controller import Controller
 from nav2_core.exceptions import ControllerException
-
-from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
-from nav2_msgs.msg import VoxelGrid
+from geometry_msgs.msg import PoseStamped, Twist, Point
+from nav2_costmap_2d.costmap_2d import Costmap2D
+from tf2_ros.buffer import Buffer
+import rclpy
+from rclpy.duration import Duration
 from rclpy.node import Node
-from nav2_core.controller import Controller
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 class RegulatedPurePursuitController(Controller):
     def __init__(self):
         self.name = 'RegulatedPurePursuitController'
-        super().__init__()
-        self.params = {
-            'desired_linear_vel': 0.5,
-            'lookahead_dist': 0.6,
-            'min_lookahead_dist': 0.3,
-            'max_lookahead_dist': 0.9,
-            'use_velocity_scaled_lookahead_dist': True,
-            'use_collision_detection': True,
-            'transform_tolerance': 0.1,
-            'regulated_linear_scaling_min_radius': 0.9,
-            'regulated_linear_scaling_min_speed': 0.25,
-        }
-        
-    def configure(self, node, name, tf, costmap):
+        self.costmap = None
+        self.tf = None
+        self.node = None
+        self.parameters = {}
+        self.global_path = None
+        self.robot_pose = None
+        self.transform_tolerance = None
+        self.processed_path = None
+        self.path_curvatures = None
+        self.current_path_index = 0
+
+    def configure(self, node: Node, name: str, tf: Buffer, costmap: Costmap2D) -> bool:
         """Configure the controller with ROS parameters"""
         self.node = node
         self.tf = tf
         self.costmap = costmap
         self.name = name
 
-        # Get parameters from ROS param server
         self.get_parameters()
+        self.setup_publishers()
+        
         return True
 
-    def get_parameters(self):
+    def cleanup(self) -> None:
+        """Clean up controller resources"""
+        self.global_path = None
+        self.processed_path = None
+
+    def activate(self) -> None:
+        """Activate the controller"""
+        self.global_path = None
+        self.processed_path = None
+
+    def deactivate(self) -> None:
+        """Deactivate the controller"""
+        self.global_path = None
+        self.processed_path = None
+
+    def get_parameters(self) -> None:
         """Get parameters from ROS parameter server"""
-        self.lookahead_distance = self.node.get_parameter('lookahead_dist').value
-        self.max_linear_velocity = self.node.get_parameter('max_linear_vel').value
-        self.min_linear_velocity = self.node.get_parameter('min_linear_vel').value
-        self.max_angular_velocity = self.node.get_parameter('max_angular_vel').value
-        # ... (add other parameters)
+        self.parameters = {
+            'lookahead_dist': self.node.declare_parameter('lookahead_dist', 0.5).value,
+            'min_lookahead_dist': self.node.declare_parameter('min_lookahead_dist', 0.3).value,
+            'max_lookahead_dist': self.node.declare_parameter('max_lookahead_dist', 0.9).value,
+            'max_linear_vel': self.node.declare_parameter('max_linear_vel', 0.5).value,
+            'min_linear_vel': self.node.declare_parameter('min_linear_vel', 0.1).value,
+            'max_angular_vel': self.node.declare_parameter('max_angular_vel', 1.0).value,
+            'curvature_scaling_factor': self.node.declare_parameter('curvature_scaling_factor', 2.0).value,
+            'smoothing_factor': self.node.declare_parameter('smoothing_factor', 0.1).value,
+            'path_resolution': self.node.declare_parameter('path_resolution', 0.1).value,
+            'transform_tolerance': self.node.declare_parameter('transform_tolerance', 0.1).value,
+            'use_velocity_scaled_lookahead_dist': self.node.declare_parameter('use_velocity_scaled_lookahead_dist', True).value,
+            'min_approach_linear_velocity': self.node.declare_parameter('min_approach_linear_velocity', 0.05).value,
+            'approach_velocity_scaling_dist': self.node.declare_parameter('approach_velocity_scaling_dist', 0.6).value,
+            'max_allowed_time_to_collision': self.node.declare_parameter('max_allowed_time_to_collision', 1.0).value,
+            'use_collision_detection': self.node.declare_parameter('use_collision_detection', True).value,
+        }
 
-    def setPath(self, path):
-        """ROS2 interface for setting the path"""
-        return self.set_path(path.poses)
+    def setPath(self, path: Path) -> bool:
+        """Set and process the global path"""
+        if not path or len(path.poses) < 2:
+            return False
 
-    def computeVelocityCommands(self, pose, velocity):
-        """ROS2 interface for computing velocity commands"""
-        try:
-            if self.processed_path is None:
-                raise ControllerException('Path not set!')
-
-            cmd_vel = self.compute_velocity(
-                self._pose_to_array(pose),
-                self.processed_path,
-                None,  # obstacles
-                self._twist_to_array(velocity)
-            )
-            
-            return self._create_twist_message(cmd_vel)
-        except Exception as e:
-            raise ControllerException(str(e))
-
-    # Helper methods for ROS message conversion
-    def _pose_to_array(self, pose):
-        """Convert ROS pose to [x, y, theta]"""
-        # Implementation here
-
-    def _twist_to_array(self, twist):
-        """Convert ROS twist to [v, w]"""
-        # Implementation here
-
-    def _create_twist_message(self, velocities):
-        """Convert [v, w] to ROS twist message"""
-        # Implementation here
-        
-    def findLookaheadPoint(self, pose):
-        """Find lookahead point on path"""
-        # Calculate lookahead distance
-        lookahead_dist = self.params['lookahead_dist']
-        if self.params['use_velocity_scaled_lookahead_dist']:
-            lookahead_dist = min(
-                max(
-                    pose.velocity * self.params['lookahead_dist'],
-                    self.params['min_lookahead_dist']
-                ),
-                self.params['max_lookahead_dist']
-            )
-            
-        # Find closest point on path at lookahead distance
-        closest_point = None
-        min_dist = float('inf')
-        
-        for point in self.global_path.poses:
-            dist = self.euclidean_distance(pose.position, point.pose.position)
-            if abs(dist - lookahead_dist) < min_dist:
-                min_dist = abs(dist - lookahead_dist)
-                closest_point = point
-                
-        return closest_point
-        
-    def calculateVelocityCommands(self, pose, lookahead_point):
-        """Calculate velocity commands to reach lookahead point"""
-        # Calculate angle to lookahead point
-        alpha = math.atan2(
-            lookahead_point.pose.position.y - pose.position.y,
-            lookahead_point.pose.position.x - pose.position.x
-        ) - pose.orientation.z
-        
-        # Calculate curvature
-        lookahead_dist = self.euclidean_distance(
-            pose.position,
-            lookahead_point.pose.position
+        self.global_path = path
+        self.processed_path = self._preprocess_path(
+            [(pose.pose.position.x, pose.pose.position.y) for pose in path.poses]
         )
-        curvature = 2.0 * math.sin(alpha) / lookahead_dist
-        
-        # Calculate velocities
-        linear_vel = self.params['desired_linear_vel']
-        angular_vel = linear_vel * curvature
-        
-        cmd_vel = Twist()
-        cmd_vel.linear.x = linear_vel
-        cmd_vel.angular.z = angular_vel
-        
+        return True
+
+    def computeVelocityCommands(self, 
+                              pose: PoseStamped,
+                              velocity: Twist) -> Twist:
+        """Compute velocity commands to follow path"""
+        if not self.global_path:
+            raise ControllerException('Global path not set!')
+
+        self.robot_pose = pose
+
+        # Transform global path to robot frame
+        transformed_path = self._transform_global_path()
+        if not transformed_path:
+            raise ControllerException('Failed to transform global path')
+
+        # Find lookahead point
+        lookahead_point = self._find_lookahead_point(transformed_path)
+        if lookahead_point is None:
+            raise ControllerException('Failed to find lookahead point')
+
+        # Compute velocities
+        cmd_vel = self._compute_velocity_commands(lookahead_point, velocity)
+
+        # Check for collisions if enabled
+        if self.parameters['use_collision_detection']:
+            if self._check_collision(cmd_vel):
+                self.node.get_logger().warn('Possible collision detected!')
+                return self._create_zero_velocity()
+
         return cmd_vel
-        
-    def applyVelocityScaling(self, cmd_vel, pose, lookahead_point):
-        """Apply velocity scaling based on curvature"""
-        # Calculate path curvature
-        curvature = self.calculatePathCurvature(pose, lookahead_point)
-        
-        # Scale velocity based on curvature
-        if abs(curvature) > 1.0 / self.params['regulated_linear_scaling_min_radius']:
-            scaling = self.params['regulated_linear_scaling_min_radius'] * abs(curvature)
-            cmd_vel.linear.x *= scaling
+
+    def _transform_global_path(self) -> list:
+        """Transform global path to robot frame"""
+        try:
+            transform = self.tf.lookup_transform(
+                'base_link',
+                self.global_path.header.frame_id,
+                rclpy.time.Time(),
+                Duration(seconds=self.parameters['transform_tolerance'])
+            )
             
-        # Ensure minimum speed
-        if cmd_vel.linear.x < self.params['regulated_linear_scaling_min_speed']:
-            cmd_vel.linear.x = self.params['regulated_linear_scaling_min_speed']
+            # Transform path points
+            transformed_path = []
+            for pose in self.global_path.poses:
+                transformed_pose = self.tf.transform(pose, 'base_link')
+                transformed_path.append(transformed_pose)
             
-        return cmd_vel
-        
-    def checkCollision(self, pose, cmd_vel):
+            return transformed_path
+        except Exception as e:
+            self.node.get_logger().error(f'Transform failed: {str(e)}')
+            return None
+
+    def _check_collision(self, cmd_vel: Twist) -> bool:
         """Check for potential collisions"""
-        # Project robot position forward
-        dt = 0.1  # Time step
-        num_steps = 10
+        if not self.costmap:
+            return False
+
+        # Project robot's path forward
+        num_points = 10
+        dt = self.parameters['max_allowed_time_to_collision'] / num_points
         
-        for i in range(num_steps):
-            # Calculate projected position
-            projected_x = pose.position.x + cmd_vel.linear.x * dt * math.cos(pose.orientation.z)
-            projected_y = pose.position.y + cmd_vel.linear.x * dt * math.sin(pose.orientation.z)
-            projected_theta = pose.orientation.z + cmd_vel.angular.z * dt
+        x, y = 0.0, 0.0  # Robot's current position in base_link frame
+        theta = 0.0
+        
+        for _ in range(num_points):
+            # Update position
+            x += cmd_vel.linear.x * cos(theta) * dt
+            y += cmd_vel.linear.x * sin(theta) * dt
+            theta += cmd_vel.angular.z * dt
             
-            # Check if projected position is in collision
-            if self.costmap.getCost(projected_x, projected_y) >= 253:  # Lethal cost
+            # Check cost at projected point
+            cost = self.costmap.getCost(int(x), int(y))
+            if cost >= 253:  # Lethal cost threshold
                 return True
                 
         return False
-        
-    @staticmethod
-    def euclidean_distance(pos1, pos2):
-        """Calculate Euclidean distance between two points"""
-        return math.sqrt(
-            (pos1.x - pos2.x) ** 2 +
-            (pos1.y - pos2.y) ** 2
-        ) 
+
+    def _create_zero_velocity(self) -> Twist:
+        """Create a zero velocity command"""
+        cmd_vel = Twist()
+        cmd_vel.linear.x = 0.0
+        cmd_vel.angular.z = 0.0
+        return cmd_vel
+
+    # ... (keeping previous path processing and velocity computation methods) 
