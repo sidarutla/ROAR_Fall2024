@@ -34,8 +34,7 @@ class ThrottleController:
         # Regulated Pure Pursuit velocity parameters
         self.use_regulated_linear_velocity_scaling = True
         self.regulated_linear_scaling_min_speed = 0.5   # Minimum speed in m/s
-        self.regulated_linear_scaling_max_speed = 200.0 # Maximum speed in km/h
-        self.desired_linear_vel = 200.0                 # Target maximum velocity in km/h
+        self.desired_linear_vel = 100.0                 # Target maximum velocity in m/s
         self.min_radius_velocity_scaling = 0.4          # How much to reduce speed in turns (0-1)
         
     def __del__(self):
@@ -500,26 +499,24 @@ class ThrottleController:
             print(text)
             self.debug_strings.append(text)
 
+    ### REGULATED PURE PURSUIT FUNCTION 
     def get_regulated_velocity(self, curvature, current_speed):
-        """Calculate velocity based on path curvature (from regulated pure pursuit)"""
+        """Calculate velocity based on path curvature"""
         if not self.use_regulated_linear_velocity_scaling:
             return current_speed
-            
-        # Convert desired speed to m/s
-        desired_speed_ms = self.desired_linear_vel / 3.6
-        
+                    
         # Calculate radius from curvature
         radius = 1.0 / max(abs(curvature), 1e-6)
         
         # Scale velocity based on curvature radius
-        curvature_velocity = desired_speed_ms * self.min_radius_velocity_scaling * math.sqrt(radius)
+        curvature_velocity = self.desired_linear_vel * self.min_radius_velocity_scaling * math.sqrt(radius)
         
-        # Ensure velocity stays within bounds
-        regulated_velocity = np.clip(
+        # Ensure velocity stays within bounds (all in m/s)
+        regulated_velocity_ms = np.clip(
             curvature_velocity,
             self.regulated_linear_scaling_min_speed,
-            desired_speed_ms
+            self.desired_linear_vel
         )
         
-        # Convert back to km/h
-        return regulated_velocity * 3.6
+        # Convert back to km/h for rest of the system
+        return regulated_velocity_ms * 3.6
