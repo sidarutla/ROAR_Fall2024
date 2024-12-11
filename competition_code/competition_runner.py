@@ -168,7 +168,7 @@ async def evaluate_solution(
         occupancy_map_sensor,
         collision_sensor
     )
-    rule = RoarCompetitionRule(waypoints * 3,vehicle,world) # 3 laps
+    rule = RoarCompetitionRule(waypoints * 1,vehicle,world) # 3 laps
 
     for _ in range(20):
         await world.step()
