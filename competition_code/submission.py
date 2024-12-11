@@ -81,14 +81,15 @@ class RoarCompetitionSolution:
         self.rpy_sensor = rpy_sensor
         self.occupancy_map_sensor = occupancy_map_sensor
         self.collision_sensor = collision_sensor
+        self.lat_controller = LatController()
+        self.throttle_controller = ThrottleController()
         self.rpp_controller = RPPController()
-        self.smoothed_path = None
-        self.path_update_counter = 0
         self.section_indeces = []
         self.num_ticks = 0
         self.section_start_ticks = 0
         self.current_section = 0
         self.lapNum = 1
+        self.smoothed_path = None
         self.last_path_update = 0
         self.path_update_interval = 10
 
