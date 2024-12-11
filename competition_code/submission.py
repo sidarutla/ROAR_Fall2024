@@ -140,15 +140,10 @@ class RoarCompetitionSolution:
         """
         self.num_ticks += 1
 
-        # Receive location, rotation and velocity data - Fixed sensor data access
-        location_data = await self.location_sensor.receive_observation()
-        vehicle_location = location_data.location_in_world
-        
-        rotation_data = await self.rpy_sensor.receive_observation()
-        vehicle_rotation = rotation_data.roll_pitch_yaw
-        
-        velocity_data = await self.velocity_sensor.receive_observation()
-        vehicle_velocity = velocity_data.velocity_xyz
+        # Receive location, rotation and velocity data
+        vehicle_location = self.location_sensor.get_last_gym_observation()
+        vehicle_rotation = self.rpy_sensor.get_last_gym_observation()
+        vehicle_velocity = self.velocity_sensor.get_last_gym_observation()
         vehicle_velocity_norm = np.linalg.norm(vehicle_velocity)
         current_speed_kmh = vehicle_velocity_norm * 3.6
 
