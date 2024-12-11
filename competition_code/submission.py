@@ -147,45 +147,70 @@ class RoarCompetitionSolution:
         vehicle_velocity_norm = np.linalg.norm(vehicle_velocity)
         current_speed_kmh = vehicle_velocity_norm * 3.6
 
-        # Update smoothed path if needed
-        if self.smoothed_path is None or len(self.smoothed_path) < 10:
-            waypoints_ahead = (self.maneuverable_waypoints * 2)[
-                self.current_waypoint_idx:self.current_waypoint_idx + 100
-            ]
-            self.smoothed_path = self.rpp_controller.smooth_path(waypoints_ahead)
-            self.last_path_update = self.num_ticks
+        # Find the waypoint closest to the vehicle
+        self.current_waypoint_idx = filter_waypoints(
+            vehicle_location, self.current_waypoint_idx, self.maneuverable_waypoints
+        )
 
-        # Get RPP control commands
-        target_point, target_dist = self.rpp_controller.get_target_point(
-            vehicle_location, current_speed_kmh, self.smoothed_path
+        # Update current section and lap counter
+        self.update_current_section(vehicle_location)
+
+        # Get next waypoint using existing smooth waypoint logic
+        waypoint_to_follow = self.next_waypoint_smooth(current_speed_kmh)
+
+        # Pure pursuit controller to steer the vehicle
+        steer_control = self.lat_controller.run(
+            vehicle_location, vehicle_rotation, waypoint_to_follow
         )
-        
-        steer, throttle, brake = self.rpp_controller.calculate_control(
-            vehicle_location, vehicle_rotation[2], current_speed_kmh,
-            target_point, target_dist
+
+        # Get throttle and brake from existing controller
+        nextWaypointIndex = self.get_lookahead_index(current_speed_kmh)
+        waypoints_for_throttle = (self.maneuverable_waypoints * 2)[
+            nextWaypointIndex : nextWaypointIndex + 300
+        ]
+        throttle, brake, gear = self.throttle_controller.run(
+            waypoints_for_throttle,
+            vehicle_location,
+            current_speed_kmh,
+            self.current_section,
         )
+
+        # Apply section-specific steering adjustments
+        steerMultiplier = round((current_speed_kmh + 0.001) / 120, 3)
         
-        # Apply section-specific adjustments
-        if self.current_section == 2:
-            steer *= 1.2
-        elif self.current_section == 3:
-            steer = np.clip(steer * 1.75, -0.8, 0.8)
+        if self.current_section == 3:
+            steerMultiplier *= 0.9
         elif self.current_section == 4:
-            steer = min(steer * 1.65, 0.7)
-        elif self.current_section == 5:
-            steer *= 1.1
+            steerMultiplier = min(1.4, steerMultiplier * 1.6)
         elif self.current_section == 6:
-            steer = np.clip(steer * 2.5, -0.9, 0.9)
-        
-        # Prepare control dictionary
+            steerMultiplier = min(steerMultiplier * 5, 5.35)
+        elif self.current_section == 7:
+            steerMultiplier *= 2
+        elif self.current_section == 9:
+            steerMultiplier = max(steerMultiplier, 1.6)
+
         control = {
             "throttle": np.clip(throttle, 0, 1),
-            "steer": np.clip(steer, -1, 1),
+            "steer": np.clip(steer_control * steerMultiplier, -1, 1),
             "brake": np.clip(brake, 0, 1),
             "hand_brake": 0,
             "reverse": 0,
+            "target_gear": gear,
         }
-        
+
+        if useDebug:
+            debugData[self.num_ticks] = {
+                "loc": [
+                    round(vehicle_location[0].item(), 3),
+                    round(vehicle_location[1].item(), 3),
+                ],
+                "throttle": round(float(control["throttle"]), 3),
+                "brake": round(float(control["brake"]), 3),
+                "steer": round(float(control["steer"]), 10),
+                "speed": round(current_speed_kmh, 3),
+                "lap": self.lapNum
+            }
+
         await self.vehicle.apply_action(control)
         return control
 
