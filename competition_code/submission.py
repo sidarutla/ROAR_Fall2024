@@ -14,6 +14,7 @@ import roar_py_interface
 from LateralController import LatController
 from ThrottleController import ThrottleController
 import atexit
+from RPPController import RPPController, PathPoint
 
 # from scipy.interpolate import interp1d
 
@@ -80,13 +81,16 @@ class RoarCompetitionSolution:
         self.rpy_sensor = rpy_sensor
         self.occupancy_map_sensor = occupancy_map_sensor
         self.collision_sensor = collision_sensor
-        self.lat_controller = LatController()
-        self.throttle_controller = ThrottleController()
+        self.rpp_controller = RPPController()
+        self.smoothed_path = None
+        self.path_update_counter = 0
         self.section_indeces = []
         self.num_ticks = 0
         self.section_start_ticks = 0
         self.current_section = 0
         self.lapNum = 1
+        self.last_path_update = 0
+        self.path_update_interval = 10
 
     async def initialize(self) -> None:
         # NOTE waypoints are changed through this line
@@ -136,98 +140,70 @@ class RoarCompetitionSolution:
         """
         self.num_ticks += 1
 
-        # Receive location, rotation and velocity data
-        vehicle_location = self.location_sensor.get_last_gym_observation()
-        vehicle_rotation = self.rpy_sensor.get_last_gym_observation()
-        vehicle_velocity = self.velocity_sensor.get_last_gym_observation()
-        vehicle_velocity_norm = np.linalg.norm(vehicle_velocity)
-        current_speed_kmh = vehicle_velocity_norm * 3.6
+        # Get sensor data
+        vehicle_location = (await self.location_sensor.receive_observation()).location
+        vehicle_rotation = (await self.rpy_sensor.receive_observation()).roll_pitch_yaw
+        current_speed = (await self.velocity_sensor.receive_observation()).velocity_xyz
+        current_speed_kmh = np.linalg.norm(current_speed) * 3.6
 
-        # Find the waypoint closest to the vehicle
-        self.current_waypoint_idx = filter_waypoints(
-            vehicle_location, self.current_waypoint_idx, self.maneuverable_waypoints
-        )
-
-        # compute and print section timing
-        for i, section_ind in enumerate(self.section_indeces):
-            if (
-                abs(self.current_waypoint_idx - section_ind) <= 2
-                and i != self.current_section
-            ):
-                print(f"Section {i}: {self.num_ticks - self.section_start_ticks} ticks")
-                self.section_start_ticks = self.num_ticks
-                self.current_section = i
-                if self.current_section == 0 and self.lapNum != 3:
-                    self.lapNum += 1
-                    print(f"\nLap {self.lapNum}\n")
-
-        nextWaypointIndex = self.get_lookahead_index(current_speed_kmh)
-        waypoint_to_follow = self.next_waypoint_smooth(current_speed_kmh)
-
-        # Pure pursuit controller to steer the vehicle
-        steer_control = self.lat_controller.run(
-            vehicle_location, vehicle_rotation, waypoint_to_follow
-        )
-
-        # Custom controller to control the vehicle's speed
-        waypoints_for_throttle = (self.maneuverable_waypoints * 2)[
-            nextWaypointIndex : nextWaypointIndex + 300
+        # Update current section
+        self.update_current_section(vehicle_location)
+        
+        # Get lookahead waypoints with section-specific adjustments
+        num_points = 100
+        if self.current_section == 3:
+            num_points = 150  # Look further ahead for complex section
+        elif self.current_section == 6:
+            num_points = 80   # Tighter following for technical section
+        
+        waypoints_ahead = (self.maneuverable_waypoints * 2)[
+            self.current_waypoint_idx:self.current_waypoint_idx + num_points
         ]
-        throttle, brake, gear = self.throttle_controller.run(
-            waypoints_for_throttle,
-            vehicle_location,
-            current_speed_kmh,
-            self.current_section,
+        
+        # Update smoothed path more frequently in technical sections
+        should_update_path = (
+            self.smoothed_path is None 
+            or len(self.smoothed_path) < 10
+            or (self.current_section in [3, 6] and self.num_ticks - self.last_path_update >= 5)
+            or (self.num_ticks - self.last_path_update >= 10)
         )
 
-        steerMultiplier = round((current_speed_kmh + 0.001) / 120, 3)
+        if should_update_path:
+            self.smoothed_path = self.rpp_controller.smooth_path(waypoints_ahead)
+            self.last_path_update = self.num_ticks
 
-        if self.current_section in [3]:
-            steerMultiplier *= 0.9
-        if self.current_section == 4:
-            steerMultiplier = min(1.4, steerMultiplier * 1.6)
-        if self.current_section in [6]:
-            steerMultiplier = min(steerMultiplier * 5, 5.35)
-        if self.current_section == 7:
-            steerMultiplier *= 2
-        if self.current_section == 9:
-            steerMultiplier = max(steerMultiplier, 1.6)
-
+        # Now we can use the smoothed path
+        target_point, target_dist = self.rpp_controller.get_target_point(
+            vehicle_location, current_speed_kmh, self.smoothed_path
+        )
+        
+        # Get RPP control commands with section-specific adjustments
+        steer, throttle, brake = self.rpp_controller.calculate_control(
+            vehicle_location, vehicle_rotation[2], current_speed_kmh,
+            target_point, target_dist
+        )
+        
+        # Apply section-specific adjustments
+        if self.current_section == 2:
+            steer *= 1.2
+        elif self.current_section == 3:
+            steer = np.clip(steer * 1.75, -0.8, 0.8)
+        elif self.current_section == 4:
+            steer = min(steer * 1.65, 0.7)
+        elif self.current_section == 5:
+            steer *= 1.1
+        elif self.current_section == 6:
+            steer = np.clip(steer * 2.5, -0.9, 0.9)
+        
+        # Prepare control dictionary
         control = {
             "throttle": np.clip(throttle, 0, 1),
-            "steer": np.clip(steer_control * steerMultiplier, -1, 1),
+            "steer": np.clip(steer, -1, 1),
             "brake": np.clip(brake, 0, 1),
             "hand_brake": 0,
             "reverse": 0,
-            "target_gear": gear,  # Gears do not appear to have an impact on speed
         }
         
-        if useDebug:
-            debugData[self.num_ticks] = {}
-            debugData[self.num_ticks]["loc"] = [
-                round(vehicle_location[0].item(), 3),
-                round(vehicle_location[1].item(), 3),
-            ]
-            debugData[self.num_ticks]["throttle"] = round(float(control["throttle"]), 3)
-            debugData[self.num_ticks]["brake"] = round(float(control["brake"]), 3)
-            debugData[self.num_ticks]["steer"] = round(float(control["steer"]), 10)
-            debugData[self.num_ticks]["speed"] = round(current_speed_kmh, 3)
-            debugData[self.num_ticks]["lap"] = self.lapNum
-
-            if useDebugPrinting and self.num_ticks % 5 == 0:
-                print(
-                    f"- Target waypoint: ({waypoint_to_follow.location[0]:.2f}, {waypoint_to_follow.location[1]:.2f}) index {nextWaypointIndex} \n\
-Current location: ({vehicle_location[0]:.2f}, {vehicle_location[1]:.2f}) index {self.current_waypoint_idx} section {self.current_section} \n\
-Distance to target waypoint: {math.sqrt((waypoint_to_follow.location[0] - vehicle_location[0]) ** 2 + (waypoint_to_follow.location[1] - vehicle_location[1]) ** 2):.3f}\n"
-                )
-
-                print(
-                    f"--- Speed: {current_speed_kmh:.2f} kph \n\
-Throttle: {control['throttle']:.3f} \n\
-Brake: {control['brake']:.3f} \n\
-Steer: {control['steer']:.10f} \n"
-                )
-
         await self.vehicle.apply_action(control)
         return control
 
@@ -361,3 +337,13 @@ Steer: {control['steer']:.10f} \n"
             target_waypoint = self.maneuverable_waypoints[next_waypoint_index]
 
         return target_waypoint
+
+    def update_current_section(self, vehicle_location):
+        for i, section_ind in enumerate(self.section_indeces):
+            if (abs(self.current_waypoint_idx - section_ind) <= 2 
+                and i != self.current_section):
+                if i == 0 and self.current_section == 9:
+                    self.lapNum += 1
+                    print(f"\nLap {self.lapNum}\n")
+                self.current_section = i
+                self.section_start_ticks = self.num_ticks
