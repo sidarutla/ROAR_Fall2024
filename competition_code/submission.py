@@ -140,44 +140,31 @@ class RoarCompetitionSolution:
         """
         self.num_ticks += 1
 
-        # Get sensor data
-        vehicle_location = (await self.location_sensor.receive_observation()).location
-        vehicle_rotation = (await self.rpy_sensor.receive_observation()).roll_pitch_yaw
-        current_speed = (await self.velocity_sensor.receive_observation()).velocity_xyz
-        current_speed_kmh = np.linalg.norm(current_speed) * 3.6
+        # Receive location, rotation and velocity data - Fixed sensor data access
+        location_data = await self.location_sensor.receive_observation()
+        vehicle_location = location_data.location
+        
+        rotation_data = await self.rpy_sensor.receive_observation()
+        vehicle_rotation = rotation_data.roll_pitch_yaw
+        
+        velocity_data = await self.velocity_sensor.receive_observation()
+        vehicle_velocity = velocity_data.velocity_xyz
+        vehicle_velocity_norm = np.linalg.norm(vehicle_velocity)
+        current_speed_kmh = vehicle_velocity_norm * 3.6
 
-        # Update current section
-        self.update_current_section(vehicle_location)
-        
-        # Get lookahead waypoints with section-specific adjustments
-        num_points = 100
-        if self.current_section == 3:
-            num_points = 150  # Look further ahead for complex section
-        elif self.current_section == 6:
-            num_points = 80   # Tighter following for technical section
-        
-        waypoints_ahead = (self.maneuverable_waypoints * 2)[
-            self.current_waypoint_idx:self.current_waypoint_idx + num_points
-        ]
-        
-        # Update smoothed path more frequently in technical sections
-        should_update_path = (
-            self.smoothed_path is None 
-            or len(self.smoothed_path) < 10
-            or (self.current_section in [3, 6] and self.num_ticks - self.last_path_update >= 5)
-            or (self.num_ticks - self.last_path_update >= 10)
-        )
-
-        if should_update_path:
+        # Update smoothed path if needed
+        if self.smoothed_path is None or len(self.smoothed_path) < 10:
+            waypoints_ahead = (self.maneuverable_waypoints * 2)[
+                self.current_waypoint_idx:self.current_waypoint_idx + 100
+            ]
             self.smoothed_path = self.rpp_controller.smooth_path(waypoints_ahead)
             self.last_path_update = self.num_ticks
 
-        # Now we can use the smoothed path
+        # Get RPP control commands
         target_point, target_dist = self.rpp_controller.get_target_point(
             vehicle_location, current_speed_kmh, self.smoothed_path
         )
         
-        # Get RPP control commands with section-specific adjustments
         steer, throttle, brake = self.rpp_controller.calculate_control(
             vehicle_location, vehicle_rotation[2], current_speed_kmh,
             target_point, target_dist
