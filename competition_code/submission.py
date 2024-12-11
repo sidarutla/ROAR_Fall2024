@@ -142,7 +142,7 @@ class RoarCompetitionSolution:
 
         # Receive location, rotation and velocity data - Fixed sensor data access
         location_data = await self.location_sensor.receive_observation()
-        vehicle_location = location_data.location
+        vehicle_location = location_data.location_in_world
         
         rotation_data = await self.rpy_sensor.receive_observation()
         vehicle_rotation = rotation_data.roll_pitch_yaw
