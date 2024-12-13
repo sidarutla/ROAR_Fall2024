@@ -19,7 +19,7 @@ class LatController:
         # Steering tuning
         self.use_regulated_linear_velocity_scaling = True
         self.regulated_linear_scaling_min_radius = 0.9  # Minimum turning radius for regulation
-        self.steering_gain = 0.53          # Overall steering aggressiveness
+        self.steering_gain = 0.5          # Overall steering aggressiveness
 
     def calculate_curvature(self, waypoint_vector):
         """Calculate path curvature for speed regulation"""
