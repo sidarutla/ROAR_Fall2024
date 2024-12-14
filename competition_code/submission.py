@@ -104,7 +104,7 @@ class RoarCompetitionSolution:
             [198, 307],
             [-12, 38],
             [-85, -339],
-            [-150, -1042],
+            [-205, -1061],
             [-318, -991],
             [-352, -119],
         ]
@@ -195,7 +195,7 @@ class RoarCompetitionSolution:
         if self.current_section == 7:
             steerMultiplier *= 2
         if self.current_section == 9:
-            steerMultiplier = max(steerMultiplier, 1.6)
+            steerMultiplier = max(steerMultiplier, 1.6) * 0.9
 
         control = {
             "throttle": np.clip(throttle, 0, 1),
@@ -317,7 +317,7 @@ Steer: {control['steer']:.10f} \n"
             num_points = round(lookahead_value * 1.35)
         if self.current_section == 6:
             num_points = 5
-            next_waypoint_index = self.current_waypoint_idx + 25
+            next_waypoint_index = self.current_waypoint_idx + 27
         if self.current_section == 7:
             num_points = round(lookahead_value * 1.25)
         if self.current_section == 9:
