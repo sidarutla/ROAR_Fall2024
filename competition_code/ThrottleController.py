@@ -34,7 +34,7 @@ class ThrottleController:
         # Regulated Pure Pursuit velocity parameters
         self.use_regulated_linear_velocity_scaling = True
         self.regulated_linear_scaling_min_speed = 0.5   # Minimum speed in m/s
-        self.desired_linear_vel = 100.0                 # Target maximum velocity in m/s
+        self.desired_linear_vel = 105.0                 # Target maximum velocity in m/s
         self.min_radius_velocity_scaling = 0.4          # How much to reduce speed in turns (0-1)
         
     def __del__(self):
@@ -456,16 +456,20 @@ class ThrottleController:
             return self.max_speed
 
         if current_section == 2:
-            mu = 3.15
+            mu = 3.3
         if current_section == 3:
             mu = 3.15
         if current_section == 6:
-            mu = 3.1
+            mu = 3.3
         if current_section == 9:
-            mu = 2.2
+            mu = 2.1
 
         target_speed = math.sqrt(mu * 9.81 * radius) * 3.6
 
+        # flat out
+        if current_section == 0 or current_section == 8:
+            target_speed = self.max_speed;
+        
         return max(
             20, min(target_speed, self.max_speed)
         )  # clamp between 20 and max_speed
