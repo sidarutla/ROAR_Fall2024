@@ -195,7 +195,7 @@ class RoarCompetitionSolution:
         if self.current_section == 7:
             steerMultiplier *= 2
         if self.current_section == 9:
-            steerMultiplier = max(steerMultiplier, 1.6) * 0.95
+            steerMultiplier = max(steerMultiplier, 1.6) * 0.9
 
         control = {
             "throttle": np.clip(throttle, 0, 1),
